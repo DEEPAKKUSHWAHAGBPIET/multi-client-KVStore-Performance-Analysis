@@ -1,92 +1,65 @@
----
+# Example Output (Server)
 
-## 🧩 Case 1: High Volume of `read()`
+Performance counter stats for './uds-server':
 
-### What it means
-The server is doing many small `read()` calls, each reading just a little bit of data.
+    37      syscalls:sys_enter_read
+     3      syscalls:sys_enter_write
+     2      syscalls:sys_enter_accept
+    
+    97 seconds time elapsed
 
-### Why this is a problem
-- Every `read()` causes a switch from user to kernel mode, which is slow.  
-- Small reads don’t allow the system to group data efficiently.  
-- This increases CPU work because of more context switches.
+# Server-Side Interpretation
+Performance counter stats for './uds-server':
 
-### How to fix it
+| Server-Side Interpretation | Observation                                      | Meaning                                     | Inference                                    |
+|----------------------------|------------------------------------------------|---------------------------------------------|----------------------------------------------|
+| read = 37                  | The server performed 37 read operations from connected clients.  | Low load; likely few requests received.    | Server experienced minimal incoming data requests. |
+| write = 3                  | Only 3 responses sent to clients.               | Indicates limited interaction or mostly idle server. | Server mostly idle with few outbound responses.     |
+| accept = 2                 | Two client connections accepted.                 | Few clients connected during profiling.    | Low number of unique client connections.            |
+| Overall                    | Low syscall counts and high elapsed time (97s)  | Server was mostly waiting for client requests or idle. | Server mainly in wait state, low activity load.     |
 
-#### 1. Use bigger buffers  
-Instead of reading just a few bytes, read larger chunks, like 4KB or 8KB.
+# Example Output (Client)
 
+ Performance counter stats for './uds-client':
 
-Fewer reads means fewer syscalls.
+        6      syscalls:sys_enter_read
+        9      syscalls:sys_enter_write
+        0      syscalls:sys_enter_accept
 
-#### 2. Use non-blocking I/O with `select()` or `epoll()`  
-Don’t wait (block) for data. Instead, check if data is ready before reading. This helps manage many clients better.
+   57 seconds time elapsed
 
-#### 3. Use `readv()` or `recvmsg()`  
-These let you read into multiple buffers in one syscall, lowering overhead.
+   # Client-Side Interpretation
 
-#### 4. Use memory mapping (`mmap`)  
-For files, map them to memory and read from there without syscalls after mapping.
+   Client-Side Interpretation
 
----
+   | Observation       | Meaning                                      | Inference                                  |
+|-------------------|----------------------------------------------|--------------------------------------------|
+| write = 9       | Client issued many write calls (sending commands/requests). | Indicates client actively communicating with the server. |
+| read = 6        | Client received responses fewer times than it sent data.   | May be waiting for replies or batching requests.           |
+| connect = 0      | Two connection attempts made.                  | Could be reconnects or multiple sessions.                   |
+| Overall           | More writes than reads                          | Client is request-heavy; may be generating load.           |
 
-## 🧩 Case 2: High Volume of `write()`
+# 🧩 Syscall Bottleneck Interpretation Summary
 
-### What it means
-The server sends many small writes, like tiny responses per client.
+This table summarizes how to interpret `perf stat` syscall counters for a Unix Domain Socket (UDS) server and provides optimization strategies for each case.
 
-### Why this is bad
-- Each `write()` causes CPU to switch contexts.  
-- Sending small data frequently slows things down due to flushing buffers too often.
-
-### How to fix it
-
-#### 1. Buffer writes  
-Collect data in a buffer, then send it all at once.
-
-
-#### 2. Use `writev()` or `sendmsg()`  
-Send multiple buffers in one syscall.
-
-#### 3. Enable socket buffering smartly  
-Use TCP_NODELAY only if low latency is very important. Otherwise, let the system batch the data.
-
-#### 4. Use asynchronous I/O (`aio_write`)  
-This lets the program continue running while the data is written in the background.
+| **Syscall** | **When Count is High** | **Likely System State** | **Possible Fix / Optimization** |
+|--------------|------------------------|---------------------------|----------------------------------|
+| **read()** | Frequent small reads | I/O-bound, waiting for data | - Use larger read buffers (4KB–8KB)<br>- Batch multiple reads together<br>- Switch to non-blocking I/O with `epoll()`<br>- Use `readv()` or `recvmsg()` to read multiple buffers at once<br>- Use `mmap()` for file-backed reads |
+| **write()** | Many small writes | Kernel overhead due to frequent syscall transitions | - Batch or buffer writes before sending<br>- Use `writev()` / `sendmsg()` for combined writes<br>- Enable socket-level buffering (disable `TCP_NODELAY` unless necessary)<br>- Use asynchronous I/O (`aio_write`) |
+| **accept()** | Many short-lived connections | High connection churn, frequent process/thread creation | - Reuse persistent connections where possible<br>- Implement connection pooling<br>- Use thread or process pools to handle clients<br>- Switch to event-driven design (`epoll()`) |
+| **Blocking I/O** | Server threads often waiting | CPU idle while blocked on `read` or `write` | - Set non-blocking flag (`O_NONBLOCK`)<br>- Use I/O multiplexing (`select`, `poll`, or `epoll`)<br>- Implement event-driven architecture<br>- Use asynchronous or deferred I/O |
+| **Context Switching** | Frequent user↔kernel transitions | High syscall overhead reducing throughput | - Reduce syscall frequency via batching<br>- Combine read/write operations<br>- Optimize data copy between user and kernel space |
 
 ---
 
-## 🧩 Case 3: Blocking Calls (`read()`, `write()`, `accept()`)
+## 📊 Example perf stat Usage
 
-### What it means
-The server process or thread is waiting and not doing any useful work.
-
-### Why it’s bad
-- CPU sits idle waiting.  
-- Limits how many clients can be handled at once.  
-- The server might feel slow or unresponsive during heavy use.
-
-### How to fix it
-
-#### 1. Use non-blocking mode  
-Set file descriptors to non-blocking:
+```bash
+sudo perf stat -e syscalls:sys_enter_read,syscalls:sys_enter_write,syscalls:sys_enter_accept ./uds-server
 
 
-Then `read()` or `write()` returns immediately if data isn't there.
 
-#### 2. Use I/O multiplexing  
-Use `select()`, `poll()`, or `epoll()` to handle many connections in one thread without blocking.
+   
 
-#### 3. Use thread or process pools  
-Create worker threads or processes beforehand to do blocking operations together, avoiding overhead from creating new ones.
-
----
-
-## ⚙️ Summary Table
-
-| Problem            | Cause           | Fixes                             |
-|--------------------|-----------------|----------------------------------|
-| High `read()` calls | Small data reads | Bigger buffers / `readv()` / `mmap` |
-| High `write()` calls| Many small writes| Batch writes / `writev()`         |
-| Blocking syscalls   | Waiting on I/O  | Use non-blocking + `epoll()`      |
-
----
+   
